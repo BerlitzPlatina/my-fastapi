@@ -1,0 +1,36 @@
+{
+    "name": "FastAPI Backend",
+    "dockerComposeFile": [
+        "../../compose.yml",
+        "../../compose.override.yml"
+    ],
+    "service": "backend",
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/app/backend,type=bind,consistency=cached"
+    ],
+    "workspaceFolder": "/app/backend/",
+    "forwardPorts": [
+        8000
+    ],
+    "postCreateCommand": "pip install -q --no-cache-dir uv && UV_COMPILE_BYTECODE=0 uv sync --dev",
+    // "postAttachCommand": "uv run fastapi run --reload app/main.py --host 0.0.0.0 --port 8000",
+    "remoteEnv": {
+        "PYTHONUNBUFFERED": "1",
+        "WATCHFILES_FORCE_POLLING": "true",
+        "ENVIRONMENT": "local",
+        "PROJECT_NAME": "FastAPI Backend",
+        "POSTGRES_SERVER": "postgres",
+        "POSTGRES_USER": "postgres",
+        "FIRST_SUPERUSER": "admin@example.com",
+        "FIRST_SUPERUSER_PASSWORD": "changethis"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.black-formatter",
+                "ms-python.isort",
+                "ms-python.mypy-type-checker"
+            ]
+        }
+    }
+}
