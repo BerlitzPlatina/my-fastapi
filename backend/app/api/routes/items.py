@@ -3,9 +3,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app import crud
 from app.api.deps import CurrentUser, DatabaseDep
 from app.models import ItemCreate, ItemPublic, ItemsPublic, ItemUpdate, Message
+from app.items.service import (
+    create_item as create_item_record,
+    delete_item as delete_item_record,
+    get_item_by_id,
+    list_items,
+    update_item as update_item_record,
+)
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -18,19 +24,7 @@ async def read_items(
     Retrieve items.
     """
 
-    if current_user.is_superuser:
-        count = await db.items.count_documents({})
-        cursor = db.items.find().sort("created_at", -1).skip(skip).limit(limit)
-    else:
-        count = await db.items.count_documents({"owner_id": str(current_user.id)})
-        cursor = (
-            db.items.find({"owner_id": str(current_user.id)})
-            .sort("created_at", -1)
-            .skip(skip)
-            .limit(limit)
-        )
-
-    items = [crud.item_from_document(document) async for document in cursor]
+    items, count = await list_items(db=db, current_user=current_user, skip=skip, limit=limit)
     items_public = [
         ItemPublic.model_validate(item.model_dump())
         for item in items
@@ -44,7 +38,7 @@ async def read_item(db: DatabaseDep, current_user: CurrentUser, id: uuid.UUID) -
     """
     Get item by ID.
     """
-    item = crud.item_from_document(await db.items.find_one({"_id": str(id)}))
+    item = await get_item_by_id(db=db, item_id=id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if not current_user.is_superuser and (item.owner_id != current_user.id):
@@ -59,7 +53,7 @@ async def create_item(
     """
     Create new item.
     """
-    return await crud.create_item(db=db, item_in=item_in, owner_id=current_user.id)
+    return await create_item_record(db=db, item_in=item_in, owner_id=current_user.id)
 
 
 @router.put("/{id}", response_model=ItemPublic)
@@ -73,18 +67,14 @@ async def update_item(
     """
     Update an item.
     """
-    item = crud.item_from_document(await db.items.find_one({"_id": str(id)}))
+    item = await get_item_by_id(db=db, item_id=id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if not current_user.is_superuser and (item.owner_id != current_user.id):
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    update_dict = item_in.model_dump(exclude_unset=True)
-    if update_dict:
-        await db.items.update_one({"_id": str(id)}, {"$set": update_dict})
-        updated_document = await db.items.find_one({"_id": str(id)})
-        item = crud.item_from_document(updated_document) or item
-    return item
+    updated_item = await update_item_record(db=db, item_id=id, item_in=item_in)
+    return updated_item or item
 
 
 @router.delete("/{id}")
@@ -94,10 +84,10 @@ async def delete_item(
     """
     Delete an item.
     """
-    item = crud.item_from_document(await db.items.find_one({"_id": str(id)}))
+    item = await get_item_by_id(db=db, item_id=id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if not current_user.is_superuser and (item.owner_id != current_user.id):
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    await db.items.delete_one({"_id": str(id)})
+    await delete_item_record(db=db, item_id=id)
     return Message(message="Item deleted successfully")

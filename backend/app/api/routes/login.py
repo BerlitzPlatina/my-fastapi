@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-from app import crud
 from app.api.deps import CurrentUser, DatabaseDep, get_current_active_superuser
 from app.core import security
 from app.core.config import settings
@@ -16,6 +15,7 @@ from app.utils import (
     send_email,
     verify_password_reset_token,
 )
+from app.users.service import authenticate, get_user_by_email, update_user
 
 router = APIRouter(tags=["login"])
 
@@ -27,7 +27,7 @@ async def login_access_token(
     """
     OAuth2 compatible token login, get an access token for future requests
     """
-    user = await crud.authenticate(
+    user = await authenticate(
         db=db, email=form_data.username, password=form_data.password
     )
     if not user:
@@ -56,7 +56,7 @@ async def recover_password(email: str, db: DatabaseDep) -> Message:
     """
     Password Recovery
     """
-    user = await crud.get_user_by_email(db=db, email=email)
+    user = await get_user_by_email(db=db, email=email)
 
     # Always return the same response to prevent email enumeration attacks.
     if user:
@@ -83,13 +83,13 @@ async def reset_password(db: DatabaseDep, body: NewPassword) -> Message:
     if not email:
         raise HTTPException(status_code=400, detail="Invalid token")
 
-    user = await crud.get_user_by_email(db=db, email=email)
+    user = await get_user_by_email(db=db, email=email)
     if not user:
         raise HTTPException(status_code=400, detail="Invalid token")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
 
-    await crud.update_user(
+    await update_user(
         db=db,
         db_user=user,
         user_in=UserUpdate(password=body.new_password),
@@ -106,7 +106,7 @@ async def recover_password_html_content(email: str, db: DatabaseDep) -> Any:
     """
     HTML Content for Password Recovery
     """
-    user = await crud.get_user_by_email(db=db, email=email)
+    user = await get_user_by_email(db=db, email=email)
 
     if not user:
         raise HTTPException(

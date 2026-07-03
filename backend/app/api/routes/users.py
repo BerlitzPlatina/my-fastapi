@@ -3,7 +3,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import crud
 from app.api.deps import CurrentUser, DatabaseDep, get_current_active_superuser
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
@@ -18,6 +17,14 @@ from app.models import (
     UserUpdateMe,
 )
 from app.utils import generate_new_account_email, send_email
+from app.users.service import (
+    create_user as create_user_record,
+    delete_user as delete_user_record,
+    get_user_by_email,
+    get_user_by_id,
+    list_users,
+    update_user as update_user_record,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -31,9 +38,7 @@ async def read_users(db: DatabaseDep, skip: int = 0, limit: int = 100) -> Any:
     """
     Retrieve users.
     """
-    count = await db.users.count_documents({})
-    cursor = db.users.find().sort("created_at", -1).skip(skip).limit(limit)
-    users = [crud.user_from_document(document) async for document in cursor]
+    users, count = await list_users(db=db, skip=skip, limit=limit)
     users_public = [
         UserPublic.model_validate(user.model_dump())
         for user in users
@@ -49,14 +54,14 @@ async def create_user(*, db: DatabaseDep, user_in: UserCreate) -> Any:
     """
     Create new user.
     """
-    user = await crud.get_user_by_email(db=db, email=user_in.email)
+    user = await get_user_by_email(db=db, email=user_in.email)
     if user:
         raise HTTPException(
             status_code=400,
             detail="The user with this email already exists in the system.",
         )
 
-    user = await crud.create_user(db=db, user_create=user_in)
+    user = await create_user_record(db=db, user_create=user_in)
     if settings.emails_enabled and user_in.email:
         email_data = generate_new_account_email(
             email_to=user_in.email,
@@ -79,7 +84,7 @@ async def update_user_me(
     Update own user.
     """
     if user_in.email:
-        existing_user = await crud.get_user_by_email(db=db, email=user_in.email)
+        existing_user = await get_user_by_email(db=db, email=user_in.email)
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=409, detail="User with this email already exists"
@@ -87,9 +92,11 @@ async def update_user_me(
 
     user_data = user_in.model_dump(exclude_unset=True)
     if user_data:
-        await db.users.update_one({"_id": str(current_user.id)}, {"$set": user_data})
-        updated = await db.users.find_one({"_id": str(current_user.id)})
-        current_user = crud.user_from_document(updated) or current_user
+        current_user = await update_user_record(
+            db=db,
+            db_user=current_user,
+            user_in=UserUpdate(**user_data),
+        )
     return current_user
 
 
@@ -109,10 +116,10 @@ async def update_password_me(
             detail="New password cannot be the same as the current one",
         )
 
-    hashed_password = get_password_hash(body.new_password)
-    await db.users.update_one(
-        {"_id": str(current_user.id)},
-        {"$set": {"hashed_password": hashed_password}},
+    await update_user_record(
+        db=db,
+        db_user=current_user,
+        user_in=UserUpdate(password=body.new_password),
     )
     return Message(message="Password updated successfully")
 
@@ -145,20 +152,18 @@ async def register_user(db: DatabaseDep, user_in: UserRegister) -> Any:
     """
     Create new user without the need to be logged in.
     """
-    user = await crud.get_user_by_email(db=db, email=user_in.email)
+    user = await get_user_by_email(db=db, email=user_in.email)
     if user:
         raise HTTPException(
             status_code=400,
             detail="The user with this email already exists in the system",
         )
-    user_create = UserCreate.model_validate(
-        {
-            "email": user_in.email,
-            "password": user_in.password,
-            "full_name": user_in.full_name,
-        }
+    user_create = UserCreate(
+        email=user_in.email,
+        password=user_in.password,
+        full_name=user_in.full_name,
     )
-    return await crud.create_user(db=db, user_create=user_create)
+    return await create_user_record(db=db, user_create=user_create)
 
 
 @router.get("/{user_id}", response_model=UserPublic)
@@ -168,7 +173,7 @@ async def read_user_by_id(
     """
     Get a specific user by id.
     """
-    user = await crud.get_user_by_id(db=db, user_id=str(user_id))
+    user = await get_user_by_id(db=db, user_id=str(user_id))
     if user == current_user:
         return user
     if not current_user.is_superuser:
@@ -195,20 +200,20 @@ async def update_user(
     """
     Update a user.
     """
-    db_user = await crud.get_user_by_id(db=db, user_id=str(user_id))
+    db_user = await get_user_by_id(db=db, user_id=str(user_id))
     if not db_user:
         raise HTTPException(
             status_code=404,
             detail="The user with this id does not exist in the system",
         )
     if user_in.email:
-        existing_user = await crud.get_user_by_email(db=db, email=user_in.email)
+        existing_user = await get_user_by_email(db=db, email=user_in.email)
         if existing_user and existing_user.id != user_id:
             raise HTTPException(
                 status_code=409, detail="User with this email already exists"
             )
 
-    return await crud.update_user(db=db, db_user=db_user, user_in=user_in)
+    return await update_user_record(db=db, db_user=db_user, user_in=user_in)
 
 
 @router.delete("/{user_id}", dependencies=[Depends(get_current_active_superuser)])
@@ -218,7 +223,7 @@ async def delete_user(
     """
     Delete a user.
     """
-    user = await crud.get_user_by_id(db=db, user_id=str(user_id))
+    user = await get_user_by_id(db=db, user_id=str(user_id))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user == current_user:
@@ -226,6 +231,5 @@ async def delete_user(
             status_code=403,
             detail="Super users are not allowed to delete themselves",
         )
-    await db.items.delete_many({"owner_id": str(user_id)})
-    await db.users.delete_one({"_id": str(user_id)})
+    await delete_user_record(db=db, user_id=user_id)
     return Message(message="User deleted successfully")

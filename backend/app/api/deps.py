@@ -6,11 +6,11 @@ from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 from pydantic import ValidationError
 
-from app import crud
 from app.core import security
 from app.core.config import settings
 from app.core.db import MongoDatabase, get_database
 from app.models import TokenPayload, User
+from app.users.service import get_user_by_id
 
 reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login/access-token"
@@ -38,7 +38,7 @@ async def get_current_user(db: DatabaseDep, token: TokenDep) -> User:
         )
     if token_data.sub is None:
         raise HTTPException(status_code=404, detail="User not found")
-    user = await crud.get_user_by_id(db=db, user_id=token_data.sub)
+    user = await get_user_by_id(db=db, user_id=token_data.sub)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.is_active:
