@@ -1,9 +1,11 @@
-from fastapi.testclient import TestClient
-from sqlmodel import Session
+import uuid
+from datetime import UTC, datetime
 
-from app import crud
+from fastapi.testclient import TestClient
+
 from app.core.config import settings
-from app.models import User, UserCreate, UserUpdate
+from app.core.security import get_password_hash
+from app.models import User
 from tests.utils.utils import random_email, random_lower_string
 
 
@@ -19,16 +21,49 @@ def user_authentication_headers(
     return headers
 
 
-def create_random_user(db: Session) -> User:
-    email = random_email()
-    password = random_lower_string()
-    user_in = UserCreate(email=email, password=password)
-    user = crud.create_user(session=db, user_create=user_in)
+def _user_from_document(document: dict | None) -> User | None:
+    if document is None:
+        return None
+    data = document.copy()
+    data["id"] = data.pop("_id")
+    return User.model_validate(data)
+
+
+def _insert_user(
+    db: object,
+    *,
+    email: str,
+    password: str,
+    full_name: str | None = None,
+    is_superuser: bool = False,
+    is_active: bool = True,
+) -> User:
+    user_id = str(uuid.uuid4())
+    db.users.insert_one(
+        {
+            "_id": user_id,
+            "email": email,
+            "is_active": is_active,
+            "is_superuser": is_superuser,
+            "full_name": full_name,
+            "hashed_password": get_password_hash(password),
+            "created_at": datetime.now(UTC),
+        }
+    )
+    user = _user_from_document(db.users.find_one({"_id": user_id}))
+    if user is None:
+        raise RuntimeError("Failed to create user in test database")
     return user
 
 
+def create_random_user(db: object) -> User:
+    email = random_email()
+    password = random_lower_string()
+    return _insert_user(db, email=email, password=password)
+
+
 def authentication_token_from_email(
-    *, client: TestClient, email: str, db: Session
+    *, client: TestClient, email: str, db: object
 ) -> dict[str, str]:
     """
     Return a valid token for the user with given email.
@@ -36,14 +71,13 @@ def authentication_token_from_email(
     If the user doesn't exist it is created first.
     """
     password = random_lower_string()
-    user = crud.get_user_by_email(session=db, email=email)
+    user = db.users.find_one({"email": email})
     if not user:
-        user_in_create = UserCreate(email=email, password=password)
-        user = crud.create_user(session=db, user_create=user_in_create)
+        _insert_user(db, email=email, password=password)
     else:
-        user_in_update = UserUpdate(password=password)
-        if not user.id:
-            raise Exception("User id not set")
-        user = crud.update_user(session=db, db_user=user, user_in=user_in_update)
+        db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"hashed_password": get_password_hash(password)}},
+        )
 
     return user_authentication_headers(client=client, email=email, password=password)

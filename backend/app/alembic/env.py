@@ -19,10 +19,7 @@ fileConfig(config.config_file_name)
 # target_metadata = mymodel.Base.metadata
 # target_metadata = None
 
-from app.models import SQLModel  # noqa
-from app.core.config import settings # noqa
-
-target_metadata = SQLModel.metadata
+target_metadata = None
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -31,7 +28,7 @@ target_metadata = SQLModel.metadata
 
 
 def get_url():
-    return str(settings.SQLALCHEMY_DATABASE_URI)
+    return os.getenv("ALEMBIC_DATABASE_URL", "sqlite:///./alembic-dev.db")
 
 
 def run_migrations_offline():

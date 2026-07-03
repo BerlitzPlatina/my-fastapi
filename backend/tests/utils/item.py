@@ -1,16 +1,29 @@
-from sqlmodel import Session
+import uuid
+from datetime import UTC, datetime
 
-from app import crud
-from app.models import Item, ItemCreate
+from app.models import Item
 from tests.utils.user import create_random_user
 from tests.utils.utils import random_lower_string
 
 
-def create_random_item(db: Session) -> Item:
+def create_random_item(db: object) -> Item:
     user = create_random_user(db)
     owner_id = user.id
-    assert owner_id is not None
     title = random_lower_string()
     description = random_lower_string()
-    item_in = ItemCreate(title=title, description=description)
-    return crud.create_item(session=db, item_in=item_in, owner_id=owner_id)
+    item_id = str(uuid.uuid4())
+    db.items.insert_one(
+        {
+            "_id": item_id,
+            "title": title,
+            "description": description,
+            "owner_id": str(owner_id),
+            "created_at": datetime.now(UTC),
+        }
+    )
+    document = db.items.find_one({"_id": item_id})
+    if document is None:
+        raise RuntimeError("Failed to create item in test database")
+    data = document.copy()
+    data["id"] = data.pop("_id")
+    return Item.model_validate(data)

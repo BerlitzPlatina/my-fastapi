@@ -1,16 +1,39 @@
+import uuid
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pwdlib.hashers.bcrypt import BcryptHasher
-from sqlmodel import Session
 
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
-from app.crud import create_user
-from app.models import User, UserCreate
 from app.utils import generate_password_reset_token
 from tests.utils.user import user_authentication_headers
 from tests.utils.utils import random_email, random_lower_string
+
+
+def _insert_user(
+    db: object,
+    *,
+    email: str,
+    password_hash: str,
+    full_name: str | None = None,
+    is_superuser: bool = False,
+    is_active: bool = True,
+) -> str:
+    user_id = str(uuid.uuid4())
+    db.users.insert_one(
+        {
+            "_id": user_id,
+            "email": email,
+            "is_active": is_active,
+            "is_superuser": is_superuser,
+            "full_name": full_name,
+            "hashed_password": password_hash,
+            "created_at": datetime.now(UTC),
+        }
+    )
+    return user_id
 
 
 def test_get_access_token(client: TestClient) -> None:
@@ -72,26 +95,23 @@ def test_recovery_password_user_not_exits(
         f"{settings.API_V1_STR}/password-recovery/{email}",
         headers=normal_user_token_headers,
     )
-    # Should return 200 with generic message to prevent email enumeration attacks
     assert r.status_code == 200
     assert r.json() == {
         "message": "If that email is registered, we sent a password recovery link"
     }
 
 
-def test_reset_password(client: TestClient, db: Session) -> None:
+def test_reset_password(client: TestClient, db: object) -> None:
     email = random_email()
     password = random_lower_string()
     new_password = random_lower_string()
 
-    user_create = UserCreate(
+    _insert_user(
+        db,
         email=email,
         full_name="Test User",
-        password=password,
-        is_active=True,
-        is_superuser=False,
+        password_hash=get_password_hash(password),
     )
-    user = create_user(session=db, user_create=user_create)
     token = generate_password_reset_token(email=email)
     headers = user_authentication_headers(client=client, email=email, password=password)
     data = {"new_password": new_password, "token": token}
@@ -105,8 +125,9 @@ def test_reset_password(client: TestClient, db: Session) -> None:
     assert r.status_code == 200
     assert r.json() == {"message": "Password updated successfully"}
 
-    db.refresh(user)
-    verified, _ = verify_password(new_password, user.hashed_password)
+    user = db.users.find_one({"email": email})
+    assert user is not None
+    verified, _ = verify_password(new_password, user["hashed_password"])
     assert verified
 
 
@@ -127,23 +148,16 @@ def test_reset_password_invalid_token(
 
 
 def test_login_with_bcrypt_password_upgrades_to_argon2(
-    client: TestClient, db: Session
+    client: TestClient, db: object
 ) -> None:
-    """Test that logging in with a bcrypt password hash upgrades it to argon2."""
     email = random_email()
     password = random_lower_string()
 
-    # Create a bcrypt hash directly (simulating legacy password)
     bcrypt_hasher = BcryptHasher()
     bcrypt_hash = bcrypt_hasher.hash(password)
-    assert bcrypt_hash.startswith("$2")  # bcrypt hashes start with $2
+    assert bcrypt_hash.startswith("$2")
 
-    user = User(email=email, hashed_password=bcrypt_hash, is_active=True)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    assert user.hashed_password.startswith("$2")
+    user_id = _insert_user(db, email=email, password_hash=bcrypt_hash)
 
     login_data = {"username": email, "password": password}
     r = client.post(f"{settings.API_V1_STR}/login/access-token", data=login_data)
@@ -151,33 +165,25 @@ def test_login_with_bcrypt_password_upgrades_to_argon2(
     tokens = r.json()
     assert "access_token" in tokens
 
-    db.refresh(user)
+    updated_user = db.users.find_one({"_id": user_id})
+    assert updated_user is not None
+    assert updated_user["hashed_password"].startswith("$argon2")
 
-    # Verify the hash was upgraded to argon2
-    assert user.hashed_password.startswith("$argon2")
-
-    verified, updated_hash = verify_password(password, user.hashed_password)
+    verified, updated_hash = verify_password(password, updated_user["hashed_password"])
     assert verified
-    # Should not need another update since it's already argon2
     assert updated_hash is None
 
 
-def test_login_with_argon2_password_keeps_hash(client: TestClient, db: Session) -> None:
-    """Test that logging in with an argon2 password hash does not update it."""
+def test_login_with_argon2_password_keeps_hash(
+    client: TestClient, db: object
+) -> None:
     email = random_email()
     password = random_lower_string()
 
-    # Create an argon2 hash (current default)
     argon2_hash = get_password_hash(password)
     assert argon2_hash.startswith("$argon2")
 
-    # Create user with argon2 hash
-    user = User(email=email, hashed_password=argon2_hash, is_active=True)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    original_hash = user.hashed_password
+    user_id = _insert_user(db, email=email, password_hash=argon2_hash)
 
     login_data = {"username": email, "password": password}
     r = client.post(f"{settings.API_V1_STR}/login/access-token", data=login_data)
@@ -185,7 +191,7 @@ def test_login_with_argon2_password_keeps_hash(client: TestClient, db: Session) 
     tokens = r.json()
     assert "access_token" in tokens
 
-    db.refresh(user)
-
-    assert user.hashed_password == original_hash
-    assert user.hashed_password.startswith("$argon2")
+    updated_user = db.users.find_one({"_id": user_id})
+    assert updated_user is not None
+    assert updated_user["hashed_password"] == argon2_hash
+    assert updated_user["hashed_password"].startswith("$argon2")

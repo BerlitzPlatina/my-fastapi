@@ -40,6 +40,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --package app
 
+RUN uv pip install "motor>=3.7.1,<4.0.0"
+
 WORKDIR /app/backend/
 
 CMD ["fastapi", "run", "--workers", "4"]
